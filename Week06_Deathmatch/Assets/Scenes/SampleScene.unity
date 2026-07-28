@@ -780,6 +780,7 @@ GameObject:
   - component: {fileID: 1016704801}
   - component: {fileID: 1016704800}
   - component: {fileID: 1016704803}
+  - component: {fileID: 1016704804}
   m_Layer: 0
   m_Name: Network Manager
   m_TagString: Untagged
@@ -882,11 +883,23 @@ MonoBehaviour:
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 1016704799}
-  m_Enabled: 1
+  m_Enabled: 0
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: aa75d1d0fac084d4fa0a04441a384ec9, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::NetworkBootstrap
+--- !u!114 &1016704804
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1016704799}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 8d26ae1bb401a47bd81928c4918b0c28, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::SessionBootstrap
 --- !u!1 &1295398887
 GameObject:
   m_ObjectHideFlags: 0
