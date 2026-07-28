@@ -49,12 +49,24 @@ public class PlayerDataBehaviour : NetworkBehaviour
         }
     }
 
+    // Modest budget — this is a manual test trigger, not something that
+    // should ever legitimately fire more than a couple times a second.
+    private readonly RpcRateLimiter rateLimiter = new RpcRateLimiter(ratePerSecond: 2, burstCapacity: 3);
+
     [ServerRpc]
-    private void RequestTestKillServerRpc()
+    private void RequestTestKillServerRpc(ServerRpcParams rpcParams = default)
     {
+        ulong senderId = rpcParams.Receive.SenderClientId;
+
+        if (!rateLimiter.TryConsume(senderId, "TestKill", NetworkManager.Singleton.ServerTime.Time))
+        {
+            SecurityLog.LogRejection(senderId, "TestKill", "rate limit exceeded");
+            return;
+        }
+
         foreach (var kvp in NetworkManager.Singleton.ConnectedClients)
         {
-            if (kvp.Key == OwnerClientId) continue;
+            if (kvp.Key == senderId) continue;
 
             var otherData = kvp.Value.PlayerObject != null
                 ? kvp.Value.PlayerObject.GetComponent<PlayerDataBehaviour>()
@@ -62,7 +74,7 @@ public class PlayerDataBehaviour : NetworkBehaviour
 
             if (otherData != null && otherData.TeamId.Value != TeamId.Value)
             {
-                SessionManagerBehaviour.Instance.HandleKill(kvp.Key, OwnerClientId);
+                SessionManagerBehaviour.Instance.HandleKill(kvp.Key, senderId);
                 return;
             }
         }

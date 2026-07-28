@@ -20,10 +20,23 @@ public class WeaponBehaviour : NetworkBehaviour
     [SerializeField] private float maxRewindSeconds = 0.25f;
     [SerializeField] private int damageOnHit = 34;
 
+    // 8 shots/sec sustained, with a small burst allowance for legitimate
+    // packet-batching hiccups — well above any reasonable weapon fire rate
+    // for this project, but low enough to stop a scripted fire-spam abuse.
+    private readonly RpcRateLimiter rateLimiter = new RpcRateLimiter(ratePerSecond: 8, burstCapacity: 12);
+
     [ServerRpc]
-    public void FireServerRpc(Vector3 origin, Vector3 direction, double clientFireTime)
+    public void FireServerRpc(Vector3 origin, Vector3 direction, double clientFireTime, ServerRpcParams rpcParams = default)
     {
+        ulong senderId = rpcParams.Receive.SenderClientId;
         double serverNow = NetworkManager.Singleton.ServerTime.Time;
+
+        if (!rateLimiter.TryConsume(senderId, "Fire", serverNow))
+        {
+            SecurityLog.LogRejection(senderId, "Fire", "rate limit exceeded");
+            return;
+        }
+
         double age = serverNow - clientFireTime;
 
         // Reject shots claiming to be older than we're willing to rewind.
@@ -33,8 +46,8 @@ public class WeaponBehaviour : NetworkBehaviour
         // negative age (a client claiming a shot from the future).
         if (age > maxRewindSeconds || age < 0)
         {
-            Debug.LogWarning($"[Weapon] Rejected shot from client {OwnerClientId} — " +
-                              $"rewind age {age:F3}s outside allowed [0, {maxRewindSeconds}]s");
+            SecurityLog.LogRejection(senderId, "Fire",
+                $"rewind age {age:F3}s outside allowed [0, {maxRewindSeconds}]s");
             return;
         }
 
@@ -42,7 +55,7 @@ public class WeaponBehaviour : NetworkBehaviour
 
         foreach (var kvp in NetworkManager.Singleton.ConnectedClients)
         {
-            if (kvp.Key == OwnerClientId) continue; // no self-hits
+            if (kvp.Key == senderId) continue; // no self-hits
 
             var targetObject = kvp.Value.PlayerObject;
             if (targetObject == null) continue;
@@ -54,30 +67,24 @@ public class WeaponBehaviour : NetworkBehaviour
             if (!history.TryGetInterpolatedSnapshot(clientFireTime, out var snapshot))
                 continue; // not enough history yet, or too old for this target
 
-            // TEMPORARY verbose diagnostics — remove once hit detection is
-            // confirmed working. Prints the exact numbers involved so a miss
-            // can be diagnosed precisely instead of guessed at.
-            Debug.Log($"[Weapon][debug] origin={origin} dir={direction} | " +
-                      $"target {kvp.Key} head={snapshot.headPosition} torso={snapshot.torsoPosition}");
-
             if (RaySphereHit(origin, direction, snapshot.headPosition, headRadius))
             {
                 DrawDebugHit(snapshot.headPosition, headRadius);
-                Debug.Log($"[Weapon] HIT (head) — shooter {OwnerClientId} -> target {kvp.Key}, age {age:F3}s");
-                health.ServerApplyDamage(damageOnHit * 2, OwnerClientId);
+                Debug.Log($"[Weapon] HIT (head) — shooter {senderId} -> target {kvp.Key}, age {age:F3}s");
+                health.ServerApplyDamage(damageOnHit * 2, senderId);
                 return;
             }
 
             if (RaySphereHit(origin, direction, snapshot.torsoPosition, torsoRadius))
             {
                 DrawDebugHit(snapshot.torsoPosition, torsoRadius);
-                Debug.Log($"[Weapon] HIT (torso) — shooter {OwnerClientId} -> target {kvp.Key}, age {age:F3}s");
-                health.ServerApplyDamage(damageOnHit, OwnerClientId);
+                Debug.Log($"[Weapon] HIT (torso) — shooter {senderId} -> target {kvp.Key}, age {age:F3}s");
+                health.ServerApplyDamage(damageOnHit, senderId);
                 return;
             }
         }
 
-        Debug.Log($"[Weapon] Shot from client {OwnerClientId} missed (age {age:F3}s).");
+        Debug.Log($"[Weapon] Shot from client {senderId} missed (age {age:F3}s).");
     }
 
     /// <summary>
