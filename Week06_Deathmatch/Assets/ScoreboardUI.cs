@@ -22,6 +22,13 @@ public class ScoreboardUI : MonoBehaviour
 
     private void Start()
     {
+#if UNITY_SERVER
+        // A headless dedicated server has no display — subscribing to
+        // events just to update UI text that will never be seen is pointless
+        // overhead. This is the Week 09 "#if !UNITY_SERVER" pattern applied
+        // to UI instead of the Camera/Audio/Input examples in the brief.
+        return;
+#endif
         PlayerDataBehaviour.AnySpawned += OnPlayerSpawned;
 
         // Catch players that spawned before this UI existed (e.g. this UI is

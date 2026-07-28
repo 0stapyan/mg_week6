@@ -13,20 +13,21 @@ using Unity.Services.Relay.Models;
 using UnityEngine;
 
 /// <summary>
-/// Week 08 — Session-Based Host/Join Over the Internet.
-/// Replaces NetworkBootstrap.cs. Handles UGS init/anonymous sign-in, hosting
-/// via Relay + a public Lobby carrying the join code, browsing open lobbies,
-/// and joining via the stored Relay join code. Deliberately kept as a single
-/// OnGUI script (no Canvas UI) to match the rest of the project's style.
+/// Week 08 — Session-Based Host/Join Over the Internet (UGS Relay + Lobby).
+/// Week 09 addition — a Direct Connect field, so a client build can also
+/// connect straight to a dedicated server's IP:port instead of going through
+/// Relay (that's the whole point of Week 09's test).
+///
+/// All logic here is guarded with #if !UNITY_SERVER inside method bodies —
+/// a dedicated server build has no business signing into UGS or drawing
+/// connect buttons; that's ServerBootstrap's job instead. Guarding inside
+/// the methods (not around the class) keeps this component safely attachable
+/// to the same GameObject in every build target.
 /// </summary>
 public class SessionBootstrap : MonoBehaviour
 {
     private const int MaxConnections = 4; // 1 host + 3 clients; adjust as needed
     private const string RelayJoinCodeKey = "RelayJoinCode";
-
-    // Unity Lobby Service removes a lobby from public listings if the host
-    // doesn't heartbeat it periodically (documented behavior — lobbies expire
-    // after ~30s of no heartbeat). 15s keeps well within that window.
     private const float HeartbeatIntervalSeconds = 15f;
 
     private bool _isSignedIn;
@@ -37,13 +38,20 @@ public class SessionBootstrap : MonoBehaviour
     private Lobby _joinedLobby;
     private float _heartbeatTimer;
 
+    // Direct Connect (Week 09) fields
+    private string _directIp = "127.0.0.1";
+    private string _directPort = "7777";
+
     private async void Awake()
     {
+#if !UNITY_SERVER
         await EnsureSignedInAsync();
+#endif
     }
 
     private void Update()
     {
+#if !UNITY_SERVER
         // Only the host owns/heartbeats the lobby it created.
         if (_joinedLobby == null) return;
         if (NetworkManager.Singleton == null || !NetworkManager.Singleton.IsHost) return;
@@ -54,6 +62,7 @@ public class SessionBootstrap : MonoBehaviour
             _heartbeatTimer = 0f;
             _ = HeartbeatLobbyAsync();
         }
+#endif
     }
 
     private async Task HeartbeatLobbyAsync()
@@ -64,8 +73,6 @@ public class SessionBootstrap : MonoBehaviour
         }
         catch (Exception e)
         {
-            // Non-fatal — log and keep trying on the next interval rather
-            // than tearing down the session over a single failed ping.
             Debug.LogWarning($"[SessionBootstrap] Heartbeat failed: {e.Message}");
         }
     }
@@ -74,7 +81,6 @@ public class SessionBootstrap : MonoBehaviour
     {
         try
         {
-            // Gate InitializeAsync — calling it twice throws.
             if (UnityServices.State != ServicesInitializationState.Initialized)
             {
                 await UnityServices.InitializeAsync();
@@ -97,9 +103,9 @@ public class SessionBootstrap : MonoBehaviour
 
     private void OnGUI()
     {
+#if !UNITY_SERVER
         if (NetworkManager.Singleton == null) return;
 
-        // Already in a session — just show status, no buttons.
         if (NetworkManager.Singleton.IsClient || NetworkManager.Singleton.IsServer)
         {
             string mode = NetworkManager.Singleton.IsHost ? "Host"
@@ -112,26 +118,37 @@ public class SessionBootstrap : MonoBehaviour
 
         GUI.Label(new Rect(10, 10, 600, 24), _statusMessage);
 
+        // --- Direct Connect (Week 09): join a dedicated server by IP:port,
+        // bypassing UGS Relay/Lobby entirely. Doesn't require sign-in. ---
+        GUI.Label(new Rect(10, 40, 60, 24), "IP:");
+        _directIp = GUI.TextField(new Rect(70, 40, 140, 24), _directIp);
+        GUI.Label(new Rect(220, 40, 45, 24), "Port:");
+        _directPort = GUI.TextField(new Rect(265, 40, 70, 24), _directPort);
+        if (GUI.Button(new Rect(345, 40, 130, 24), "Direct Connect"))
+        {
+            ConnectDirect();
+        }
+
         if (!_isSignedIn)
         {
-            return; // buttons appear once sign-in completes
+            return; // Relay/Lobby buttons appear once sign-in completes
         }
 
         GUI.enabled = !_isBusy;
 
-        if (GUI.Button(new Rect(10, 40, 150, 30), "Host"))
+        if (GUI.Button(new Rect(10, 74, 150, 30), "Host (Relay)"))
         {
             _ = HostGameAsync();
         }
 
-        if (GUI.Button(new Rect(170, 40, 150, 30), "Refresh Lobbies"))
+        if (GUI.Button(new Rect(170, 74, 150, 30), "Refresh Lobbies"))
         {
             _ = RefreshLobbiesAsync();
         }
 
         GUI.enabled = true;
 
-        float y = 80;
+        float y = 114;
         GUI.Label(new Rect(10, y, 300, 22), $"Lobbies found: {_lobbies.Count}");
         y += 24;
 
@@ -146,6 +163,21 @@ public class SessionBootstrap : MonoBehaviour
             GUI.enabled = true;
             y += 26;
         }
+#endif
+    }
+
+    private void ConnectDirect()
+    {
+        if (!ushort.TryParse(_directPort, out var port))
+        {
+            _statusMessage = "Invalid port.";
+            return;
+        }
+
+        var transport = NetworkManager.Singleton.GetComponent<UnityTransport>();
+        transport.SetConnectionData(_directIp, port);
+        NetworkManager.Singleton.StartClient();
+        _statusMessage = $"Connecting directly to {_directIp}:{port}...";
     }
 
     private async Task HostGameAsync()
@@ -154,17 +186,12 @@ public class SessionBootstrap : MonoBehaviour
         _statusMessage = "Allocating relay...";
         try
         {
-            // (a) allocate relay
             Allocation allocation = await RelayService.Instance.CreateAllocationAsync(MaxConnections);
-
-            // (b) shareable join code
             string joinCode = await RelayService.Instance.GetJoinCodeAsync(allocation.AllocationId);
 
-            // (c) configure transport
             var transport = NetworkManager.Singleton.GetComponent<UnityTransport>();
             transport.SetRelayServerData(new RelayServerData(allocation, "dtls"));
 
-            // (d) start hosting
             NetworkManager.Singleton.StartHost();
 
             _statusMessage = "Creating lobby...";
@@ -174,7 +201,6 @@ public class SessionBootstrap : MonoBehaviour
                 IsPrivate = false,
                 Data = new Dictionary<string, DataObject>
                 {
-                    // Store the join code so browsing clients can reach the relay.
                     { RelayJoinCodeKey, new DataObject(DataObject.VisibilityOptions.Public, joinCode) }
                 }
             };
@@ -183,7 +209,7 @@ public class SessionBootstrap : MonoBehaviour
             _joinedLobby = await LobbyService.Instance.CreateLobbyAsync(
                 $"{playerIdShort}'s match", MaxConnections, options);
 
-            _heartbeatTimer = 0f; // start the heartbeat clock now that we own a lobby
+            _heartbeatTimer = 0f;
 
             _statusMessage = $"Hosting — lobby '{_joinedLobby.Name}' (code {joinCode})";
         }
@@ -225,22 +251,16 @@ public class SessionBootstrap : MonoBehaviour
         _statusMessage = "Joining lobby...";
         try
         {
-            // (a) join the lobby
             Lobby lobby = await LobbyService.Instance.JoinLobbyByIdAsync(lobbyId);
-
-            // (b) read the relay join code
             string joinCode = lobby.Data[RelayJoinCodeKey].Value;
-
-            // (c) join the relay allocation
             JoinAllocation joinAllocation = await RelayService.Instance.JoinAllocationAsync(joinCode);
 
-            // (d) configure transport (mirrors host) and start client
             var transport = NetworkManager.Singleton.GetComponent<UnityTransport>();
             transport.SetRelayServerData(new RelayServerData(joinAllocation, "dtls"));
 
             NetworkManager.Singleton.StartClient();
 
-            _joinedLobby = lobby; // joining clients don't heartbeat — only the host does (see Update)
+            _joinedLobby = lobby;
             _statusMessage = $"Joined '{lobby.Name}'";
         }
         catch (Exception e)
