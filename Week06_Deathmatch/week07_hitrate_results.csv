@@ -1,0 +1,4 @@
+latency_ms,total_shots,hits,misses,rejected,hit_rate_percent
+0,37,12,25,0,32.4
+100,36,16,19,1,44.4
+200,58,28,30,0,48.3
